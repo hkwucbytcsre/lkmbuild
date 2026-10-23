@@ -66,16 +66,23 @@ jobs:
             scripts/config -d LOCALVERSION_AUTO
           fi
 
-      - name: 强制 kprobe 方案所需选项 + 生成构建树（不编译内核！）
-        working-directory: ${{ runner.temp }}/kbuild
-        run: |
-          scripts/config -e MODULES -e KPROBES -e KRETPROBES -e KALLSYMS -e KALLSYMS_ALL
-          make ARCH=arm64 olddefconfig prepare modules_prepare
-
       - name: 取 Android clang r510928（与 GKI 编译器一致，vermagic 要求）
         run: |
           curl -fSL https://github.com/Pranav-Talmale/android_prebuilts_clang_host_linux-x86_clang-r510928/archive/refs/heads/main.tar.gz -o /tmp/clang.tgz
           mkdir -p ${{ runner.temp }}/toolchain && tar xzf /tmp/clang.tgz -C ${{ runner.temp }}/toolchain --strip-components=1
+
+      - name: 强制 kprobe 方案所需选项 + 生成构建树（不编译内核！）
+        env:
+          TC: ${{ runner.temp }}/toolchain
+        working-directory: ${{ runner.temp }}/kbuild
+        run: |
+          scripts/config -e MODULES -e KPROBES -e KRETPROBES -e KALLSYMS -e KALLSYMS_ALL
+          make ARCH=arm64 \
+            PATH="$TC/bin:$PATH" \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf \
+            HOSTCC=gcc \
+            olddefconfig prepare modules_prepare
 
       - name: 编译 sita_ddk 模块
         env:

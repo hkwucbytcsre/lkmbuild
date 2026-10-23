@@ -55,15 +55,20 @@ jobs:
           grep -m1 '^CONFIG_LOCALVERSION' .config || true
           head -n 3 Module.symvers
 
-      - name: 对齐 vermagic：UTS_RELEASE → CONFIG_LOCALVERSION
+      - name: 对齐 vermagic：UTS_RELEASE → CONFIG_LOCALVERSION（幂等）
         if: env.UTS_RELEASE != ''
         working-directory: ${{ runner.temp }}/kbuild
         run: |
           BASE=$(awk '/^VERSION = /{v=$3}/^PATCHLEVEL = /{p=$3}/^SUBLEVEL = /{s=$3}END{print v"."p"."s}' Makefile)
           LV="${UTS_RELEASE#"$BASE"}"
-          echo "kernel base=$BASE, LOCALVERSION=$LV"
-          scripts/config --set-str LOCALVERSION "$LV"
-          scripts/config -e LOCALVERSION_AUTO    # 含 -g 时 setlocalversion 不会重复追加
+          CUR=$(scripts/config -s LOCALVERSION 2>/dev/null || echo '')
+          echo "kernel base=$BASE, 当前 LOCALVERSION='$CUR', 期望后缀='$LV'"
+          if [ "$CUR" = "$LV" ]; then
+            echo "✓ target.config 已包含目标 vermagic，跳过改写"
+          else
+            scripts/config --set-str LOCALVERSION "$LV"
+            scripts/config -d LOCALVERSION_AUTO
+          fi
 
       - name: 强制 kprobe 方案所需选项 + 生成构建树（不编译内核！）
         working-directory: ${{ runner.temp }}/kbuild
@@ -82,14 +87,14 @@ jobs:
         run: |
           make KDIR="${{ runner.temp }}/kbuild"             PATH="$TC/bin:$PATH"             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf             HOSTCC=clang HOSTCXX=clang++ HOSTAR=llvm-ar
 
-      - name: 校验产物（vermagic 应等于输入的 UTS_RELEASE）
+      - name: 校验产物（vermagic 应等于内核树 kernel.release）
         run: |
           file sita_ddk.ko
           modinfo sita_ddk.ko | grep -E 'vermagic|filename'
-          if [ -n "$UTS_RELEASE" ]; then
-            modinfo sita_ddk.ko | grep -q "vermagic:.*$UTS_RELEASE" \
-              && echo "✓ vermagic 匹配" || (echo "✗ vermagic 不匹配"; exit 1)
-          fi
+          EXPECT=$(cat "${{ runner.temp }}/kbuild/include/config/kernel.release")
+          echo "期望 vermagic: $EXPECT"
+          modinfo sita_ddk.ko | grep -q "vermagic:.*$EXPECT" \
+            && echo "✓ vermagic 匹配" || (echo "✗ vermagic 不匹配"; exit 1)
 
       - name: 上传 artifact
         uses: actions/upload-artifact@v4

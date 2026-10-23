@@ -66,11 +66,11 @@ jobs:
             scripts/config -d LOCALVERSION_AUTO
           fi
 
-      - name: 取 Android clang r510928（AOSP 官方源，与 GKI 编译器一致）
+      - name: 取 Android clang r510928（复用内核编译工具链）
         run: |
-          curl -fSL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r510928.tar.gz" -o /tmp/clang.tgz
+          curl -fSL "https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang18-r510928/clang-r510928.zip" -o /tmp/clang.zip
           mkdir -p ${{ runner.temp }}/toolchain
-          tar xzf /tmp/clang.tgz -C ${{ runner.temp }}/toolchain
+          unzip -q /tmp/clang.zip -d ${{ runner.temp }}/toolchain
 
       - name: 强制 kprobe 方案所需选项 + 生成构建树（不编译内核！）
         env:

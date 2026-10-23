@@ -1,10 +1,6 @@
 name: build sita_ddk
 
 on:
-  push:
-    branches: [main, master]
-    tags: ['v*']
-  pull_request:
   workflow_dispatch:
     inputs:
       kernel_repo:
@@ -16,7 +12,7 @@ on:
         default: 'oneplus/sm8750_b_16.0.0_oneplus_13_6.6.118'
         required: true
       uts_release:
-        description: '设备完整内核名（uname -r），留空则用 target.config 里的版本'
+        description: '设备完整内核名（uname -r），用于强制对齐 vermagic'
         default: ''
 
 env:
@@ -31,11 +27,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 host 工具链
+      - name: 安装 host 工具链（编 scripts/ 用 gcc 即可，模块本身用 r510928）
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            bc bison flex libssl-dev libelf-dev ca-certificates git ccache
+          sudo apt-get install -y --no-install-recommends             bc bison flex libssl-dev libelf-dev ca-certificates git ccache
 
       - name: 缓存内核构建树（prepare 产物）
         uses: actions/cache@v4
@@ -53,15 +48,23 @@ jobs:
         run: |
           cp "$GITHUB_WORKSPACE/target.config" .config
           cp "$GITHUB_WORKSPACE/Module.symvers" Module.symvers
-          scripts/config -d LOCALVERSION_AUTO   # 防 setlocalversion 追加 + / -g 后缀
+          grep -m1 '^CONFIG_LOCALVERSION' .config || true
+          head -n 3 Module.symvers
 
-      - name: 对齐 vermagic（仅在填写 uts_release 时执行）
+      - name: 对齐 vermagic：UTS_RELEASE → CONFIG_LOCALVERSION（幂等）
         if: env.UTS_RELEASE != ''
         working-directory: ${{ runner.temp }}/kbuild
         run: |
           BASE=$(awk '/^VERSION = /{v=$3}/^PATCHLEVEL = /{p=$3}/^SUBLEVEL = /{s=$3}END{print v"."p"."s}' Makefile)
           LV="${UTS_RELEASE#"$BASE"}"
-          scripts/config --set-str LOCALVERSION "$LV"
+          CUR=$(scripts/config -s LOCALVERSION 2>/dev/null || echo '')
+          echo "kernel base=$BASE, 当前 LOCALVERSION='$CUR', 期望后缀='$LV'"
+          if [ "$CUR" = "$LV" ]; then
+            echo "✓ target.config 已包含目标 vermagic，跳过改写"
+          else
+            scripts/config --set-str LOCALVERSION "$LV"
+            scripts/config -d LOCALVERSION_AUTO
+          fi
 
       - name: 强制 kprobe 方案所需选项 + 生成构建树（不编译内核！）
         working-directory: ${{ runner.temp }}/kbuild
@@ -69,7 +72,7 @@ jobs:
           scripts/config -e MODULES -e KPROBES -e KRETPROBES -e KALLSYMS -e KALLSYMS_ALL
           make ARCH=arm64 olddefconfig prepare modules_prepare
 
-      - name: 取 Android clang r510928（与 GKI 编译器一致）
+      - name: 取 Android clang r510928（与 GKI 编译器一致，vermagic 要求）
         run: |
           curl -fSL https://github.com/Pranav-Talmale/android_prebuilts_clang_host_linux-x86_clang-r510928/archive/refs/heads/main.tar.gz -o /tmp/clang.tgz
           mkdir -p ${{ runner.temp }}/toolchain && tar xzf /tmp/clang.tgz -C ${{ runner.temp }}/toolchain --strip-components=1
@@ -78,11 +81,16 @@ jobs:
         env:
           TC: ${{ runner.temp }}/toolchain
         run: |
-          make KDIR="${{ runner.temp }}/kbuild" \
-            PATH="$TC/bin:$PATH" \
-            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf \
-            HOSTCC=clang HOSTCXX=clang++ HOSTAR=llvm-ar
+          make KDIR="${{ runner.temp }}/kbuild"             PATH="$TC/bin:$PATH"             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf             HOSTCC=clang HOSTCXX=clang++ HOSTAR=llvm-ar
+
+      - name: 校验产物（vermagic 应等于内核树 kernel.release）
+        run: |
+          file sita_ddk.ko
+          modinfo sita_ddk.ko | grep -E 'vermagic|filename'
+          EXPECT=$(cat "${{ runner.temp }}/kbuild/include/config/kernel.release")
+          echo "期望 vermagic: $EXPECT"
+          modinfo sita_ddk.ko | grep -q "vermagic:.*$EXPECT" \
+            && echo "✓ vermagic 匹配" || (echo "✗ vermagic 不匹配"; exit 1)
 
       - name: 上传 artifact
         uses: actions/upload-artifact@v4

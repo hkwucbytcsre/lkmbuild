@@ -1907,6 +1907,29 @@ static bool sita_sample_is_zero(const u8 *sample, size_t len)
 	return len != 0;
 }
 
+/*
+ * sita_copy_from_iter_atomic —— LKM 模式替代 copy_from_iter_nofault
+ * （该函数在 6.6 无公共头声明）。kprobe handler 的原子上下文中安全地
+ * 从 iov_iter 拷贝首段；返回未拷贝字节数，与 copy_from_iter 语义一致
+ * （调用点以 copied != len 判采样失败，不误杀）。
+ */
+static size_t sita_copy_from_iter_atomic(void *addr, size_t bytes,
+					 struct iov_iter *i)
+{
+	if (iov_iter_is_kvec(i) || iov_iter_is_bvec(i) || iov_iter_is_pipe(i))
+		return copy_from_iter(addr, bytes, i);	/* 内核内存，无 fault */
+	if (iov_iter_is_ubuf(i))
+		return __copy_from_user_inatomic(addr, i->ubuf, bytes);
+	if (iov_iter_is_iovec(i) && iov_iter_nr_segs(i) > 0) {
+		const struct iovec *iov = i->iov;
+		size_t n = min(bytes, iov[0].iov_len);
+
+		return __copy_from_user_inatomic(addr, iov[0].iov_base, n) +
+		       (bytes - n);
+	}
+	return bytes;	/* 未知 iter 类型：按采样失败处理（不误杀） */
+}
+
 static bool sita_user_write_sample_is_zero(const char __user *buf, size_t count)
 {
 	u8 sample[SITA_WRITE_SAMPLE_BYTES];
@@ -1916,7 +1939,7 @@ static bool sita_user_write_sample_is_zero(const char __user *buf, size_t count)
 		return false;
 
 	len = min_t(size_t, count, sizeof(sample));
-	if (copy_from_user_inatomic(sample, buf, len))
+	if (__copy_from_user_inatomic(sample, buf, len))
 		return false;
 
 	return sita_sample_is_zero(sample, len);
@@ -1934,7 +1957,7 @@ static bool sita_iter_write_sample_is_zero(struct iov_iter *iter, size_t count)
 
 	len = min_t(size_t, count, sizeof(sample));
 	iter_copy = *iter;
-	copied = copy_from_iter_nofault(sample, len, &iter_copy);
+	copied = sita_copy_from_iter_atomic(sample, len, &iter_copy);
 	if (copied != len)
 		return false;
 
@@ -1959,7 +1982,7 @@ static bool sita_user_write_sample_starts_with_elf(const char __user *buf,
 	if (!buf || count < sizeof(sample))
 		return false;
 
-	if (copy_from_user_inatomic(sample, buf, sizeof(sample)))
+	if (__copy_from_user_inatomic(sample, buf, sizeof(sample)))
 		return false;
 
 	return !memcmp(sample, ELFMAG, SELFMAG);
@@ -1976,7 +1999,7 @@ static bool sita_iter_write_sample_starts_with_elf(struct iov_iter *iter,
 		return false;
 
 	iter_copy = *iter;
-	copied = copy_from_iter_nofault(sample, sizeof(sample), &iter_copy);
+	copied = sita_copy_from_iter_atomic(sample, sizeof(sample), &iter_copy);
 	if (copied != sizeof(sample))
 		return false;
 
@@ -2693,8 +2716,8 @@ static int sita_sample_opened_script(struct file *file, const char *path)
 out:
 	kfree(sample);
 	return ret;
-}
 #endif
+}
 
 static bool sita_gzexe_temp_actor_should_block(const char *path,
 					     const char **reason)

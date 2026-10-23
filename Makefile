@@ -20,14 +20,14 @@ export HOSTAR  = llvm-ar
 export PATH    := $(TOOLCHAIN)/bin:$(PATH)
 
 obj-m += sita_ddk.o
-sita_ddk-y := sita_ddk.o sita_kprobe_main.o
+sita_ddk-y := sita_kprobe_main.o
 
 ccflags-y += -DSITA_DDK_LKM=1
 
 all:
-	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
+	$(MAKE) -C $(KDIR) ARCH=arm64 M=$(CURDIR) modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(CURDIR) clean
+	$(MAKE) -C $(KDIR) ARCH=arm64 M=$(CURDIR) clean
 
 .PHONY: all clean

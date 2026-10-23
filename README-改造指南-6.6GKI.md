@@ -223,16 +223,21 @@ handler **只允许在判定拒绝时写 `-EPERM`，判定允许时绝不动返�
 ## 5.1 让 sita_ddk.c 编译通过（针对 implicit-function-declaration 报错）
 
 **本次报错的直接原因**：构建目录只有骨架（sita_kprobe_main.c + Makefile），缺了
-`sita_ddk.c` 本体。完整构建目录需要四件套：
+`sita_ddk.c` 本体。完整构建目录需要五件套：
 
 ```
 <构建目录>/
-├── Makefile               # 骨架提供（sita_ddk-y := sita_ddk.o sita_kprobe_main.o）
+├── Makefile               # 骨架提供（sita_ddk-y := sita_core.o sita_kprobe_main.o）
 ├── sita_kprobe_main.c     # 骨架提供
 ├── sita_ddk_lkm.h         # 骨架提供（模块内部头文件）
-├── sita_ddk.c             # 你的源码（xg→sita 改名后）
+├── sita_core.c            # 你的源码（xg→sita 改名后，再由 sita_ddk.c 改名而来！）
 └── kernel_compat.h        # 你的源码
 ```
+
+⚠️ **文件名必须是 sita_core.c，不能叫 sita_ddk.c**：模块名（sita_ddk）与成员目标
+（sita_ddk.o）同名会让 Kbuild 报 `Circular sita_ddk.o <- sita_ddk.o dependency dropped`，
+且成员文件会被静默跳过不编译（日志里只有 sita_kprobe_main.o 的 CC 行）。
+所以 `mv sita_ddk.c sita_core.c` 是必做步骤。
 
 `sita_ddk.c`（原 xingguang_ddk.c 经 sed 改名）还必须做三处适配，否则要么继续报
 undeclared、要么链接失败：

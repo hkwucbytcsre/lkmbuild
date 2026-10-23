@@ -20,7 +20,7 @@ export HOSTAR  = llvm-ar
 export PATH    := $(TOOLCHAIN)/bin:$(PATH)
 
 obj-m += sita_ddk.o
-sita_ddk-y := sita_ddk.o sita_kprobe_main.o
+sita_ddk-y := sita_core.o sita_kprobe_main.o
 
 ccflags-y += -DSITA_DDK_LKM=1
 

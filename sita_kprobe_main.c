@@ -125,7 +125,8 @@ static int sita_kp_dm_table(struct kprobe *kp, struct pt_regs *regs)
 {
 	const char *type = (const char *)regs_get_kernel_argument(regs, 1);
 
-	return 0;   /* sita_ddk_dm_target_add 返回 void，只审计 */
+	sita_ddk_dm_target_add(type);   /* 返回 void，纯审计 */
+	return 0;
 }
 
 static struct kprobe sita_kps[] = {
@@ -151,11 +152,11 @@ static struct kprobe sita_kps[] = {
  */
 
 /* 宏模板：TARGET=被 probe 的内核函数, FN=原 hook 函数, ARGS=参数读取表达式 */
-#define SITA_KR_ENTRY(name, fn, argexpr)                                     \
+#define SITA_KR_ENTRY(name, fn, ...)                                         \
 static int sita_kr_##name##_entry(struct kretprobe_instance *ri,             \
 				  struct pt_regs *regs)                      \
 {                                                                            \
-	*(int *)ri->data = fn(argexpr) ? 1 : 0;                              \
+	*(int *)ri->data = fn(__VA_ARGS__) ? 1 : 0;                           \
 	return 0;                                                            \
 }                                                                            \
 static int sita_kr_##name(struct kretprobe_instance *ri,                     \
@@ -172,10 +173,6 @@ SITA_KR_ENTRY(bprm, sita_bprm_check_security,
 	(struct linux_binprm *)regs_get_kernel_argument(regs, 0))
 SITA_KR_ENTRY(fopen, sita_file_open,
 	(struct file *)regs_get_kernel_argument(regs, 0))
-SITA_KR_ENTRY(fperm, sita_file_permission,
-	(struct file *)regs_get_kernel_argument(regs, 0),
-	/* 热路径预过滤放在 sita_file_permission 内部（非块设备立即返回） */ 0)
-
 /* file_permission 参数是两个，单独写以便预过滤 */
 static int sita_kr_fperm_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {

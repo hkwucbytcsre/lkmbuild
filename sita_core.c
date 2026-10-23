@@ -1909,25 +1909,21 @@ static bool sita_sample_is_zero(const u8 *sample, size_t len)
 
 /*
  * sita_copy_from_iter_atomic —— LKM 模式替代 copy_from_iter_nofault
- * （该函数在 6.6 无公共头声明）。kprobe handler 的原子上下文中安全地
- * 从 iov_iter 拷贝首段；返回未拷贝字节数，与 copy_from_iter 语义一致
- * （调用点以 copied != len 判采样失败，不误杀）。
+ * （该函数在 6.6 无公共头声明；且部分厂商内核树的 struct iov_iter
+ * 被 backport 改动，无 iov 成员与 iov_iter_is_* 判断宏，依赖其内部
+ * 布局的代码不可移植）。
+ * LKM 策略：iter 内容采样整体禁用，返回"未拷贝全长"=采样失败，
+ * 调用点按不误杀处理（与 sita_sample_opened_script 禁用同理）。
  */
 static size_t sita_copy_from_iter_atomic(void *addr, size_t bytes,
 					 struct iov_iter *i)
 {
-	if (iov_iter_is_kvec(i) || iov_iter_is_bvec(i) || iov_iter_is_pipe(i))
-		return copy_from_iter(addr, bytes, i);	/* 内核内存，无 fault */
-	if (iov_iter_is_ubuf(i))
-		return __copy_from_user_inatomic(addr, i->ubuf, bytes);
-	if (iov_iter_is_iovec(i) && iov_iter_nr_segs(i) > 0) {
-		const struct iovec *iov = i->iov;
-		size_t n = min(bytes, iov[0].iov_len);
-
-		return __copy_from_user_inatomic(addr, iov[0].iov_base, n) +
-		       (bytes - n);
-	}
-	return bytes;	/* 未知 iter 类型：按采样失败处理（不误杀） */
+#ifdef SITA_DDK_LKM
+	(void)addr; (void)i;
+	return bytes;	/* 采样失败 -> 不误杀 */
+#else
+	return copy_from_iter(addr, bytes, i);
+#endif
 }
 
 static bool sita_user_write_sample_is_zero(const char __user *buf, size_t count)

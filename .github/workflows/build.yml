@@ -1,0 +1,112 @@
+name: build sita_ddk
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: '内核源码仓库'
+        default: 'https://github.com/cctv18/android_kernel_common_oneplus_sm8750.git'
+        required: true
+      kernel_ref:
+        description: '分支/tag'
+        default: 'oneplus/sm8750_b_16.0.0_oneplus_13_6.6.118'
+        required: true
+      uts_release:
+        description: '设备完整内核名（uname -r），用于强制对齐 vermagic'
+        default: ''
+
+env:
+  KERNEL_REPO: ${{ inputs.kernel_repo || 'https://github.com/cctv18/android_kernel_common_oneplus_sm8750.git' }}
+  KERNEL_REF: ${{ inputs.kernel_ref || 'oneplus/sm8750_b_16.0.0_oneplus_13_6.6.118' }}
+  UTS_RELEASE: ${{ inputs.uts_release || '' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 host 工具链（编 scripts/ 用 gcc 即可，模块本身用 r510928）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             bc bison flex libssl-dev libelf-dev ca-certificates git ccache
+
+      - name: 缓存内核构建树（prepare 产物）
+        uses: actions/cache@v4
+        id: kcache
+        with:
+          path: ${{ runner.temp }}/kbuild
+          key: kbuild-${{ env.KERNEL_REPO }}-${{ env.KERNEL_REF }}-${{ hashFiles('target.config') }}
+
+      - name: 获取内核源码
+        if: steps.kcache.outputs.cache-hit != 'true'
+        run: git clone --depth 1 -b "$KERNEL_REF" "$KERNEL_REPO" "${{ runner.temp }}/kbuild"
+
+      - name: 放置仓库自带的 .config / Module.symvers
+        working-directory: ${{ runner.temp }}/kbuild
+        run: |
+          cp "$GITHUB_WORKSPACE/target.config" .config
+          cp "$GITHUB_WORKSPACE/Module.symvers" Module.symvers
+          grep -m1 '^CONFIG_LOCALVERSION' .config || true
+          head -n 3 Module.symvers
+
+      - name: 对齐 vermagic：UTS_RELEASE → CONFIG_LOCALVERSION
+        if: env.UTS_RELEASE != ''
+        working-directory: ${{ runner.temp }}/kbuild
+        run: |
+          BASE=$(awk '/^VERSION = /{v=$3}/^PATCHLEVEL = /{p=$3}/^SUBLEVEL = /{s=$3}END{print v"."p"."s}' Makefile)
+          LV="${UTS_RELEASE#"$BASE"}"
+          echo "kernel base=$BASE, LOCALVERSION=$LV"
+          scripts/config --set-str LOCALVERSION "$LV"
+          scripts/config -e LOCALVERSION_AUTO    # 含 -g 时 setlocalversion 不会重复追加
+
+      - name: 强制 kprobe 方案所需选项 + 生成构建树（不编译内核！）
+        working-directory: ${{ runner.temp }}/kbuild
+        run: |
+          scripts/config -e MODULES -e KPROBES -e KRETPROBES -e KALLSYMS -e KALLSYMS_ALL
+          make ARCH=arm64 olddefconfig prepare modules_prepare
+
+      - name: 取 Android clang r510928（与 GKI 编译器一致，vermagic 要求）
+        run: |
+          curl -fSL https://github.com/Pranav-Talmale/android_prebuilts_clang_host_linux-x86_clang-r510928/archive/refs/heads/main.tar.gz -o /tmp/clang.tgz
+          mkdir -p ${{ runner.temp }}/toolchain && tar xzf /tmp/clang.tgz -C ${{ runner.temp }}/toolchain --strip-components=1
+
+      - name: 编译 sita_ddk 模块
+        env:
+          TC: ${{ runner.temp }}/toolchain
+        run: |
+          make KDIR="${{ runner.temp }}/kbuild"             PATH="$TC/bin:$PATH"             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf             HOSTCC=clang HOSTCXX=clang++ HOSTAR=llvm-ar
+
+      - name: 校验产物（vermagic 应等于输入的 UTS_RELEASE）
+        run: |
+          file sita_ddk.ko
+          modinfo sita_ddk.ko | grep -E 'vermagic|filename'
+          if [ -n "$UTS_RELEASE" ]; then
+            modinfo sita_ddk.ko | grep -q "vermagic:.*$UTS_RELEASE" \
+              && echo "✓ vermagic 匹配" || (echo "✗ vermagic 不匹配"; exit 1)
+          fi
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sita-ddk-ko-${{ env.UTS_RELEASE || env.KERNEL_REF }}
+          path: sita_ddk.ko
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sita-ddk-ko-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: sita_ddk.ko

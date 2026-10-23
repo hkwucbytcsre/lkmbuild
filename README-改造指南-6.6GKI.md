@@ -217,3 +217,49 @@ handler **只允许在判定拒绝时写 `-EPERM`，判定允许时绝不动返�
 4. **双份日志/冗余判定**：同一 `dd of=/dev/block/by-name/xxx` 会触发两边各一条日志，
    `blkdev_ioctl`+`__blkdev_issue_*` 的 probe 与 BBG 的 file_ioctl 形成双保险，无害；
    介意日志量可在 sita 侧去重（同 inode+pid 短时间窗内只记一次）。
+
+---
+
+## 5.1 让 sita_ddk.c 编译通过（针对 implicit-function-declaration 报错）
+
+**本次报错的直接原因**：构建目录只有骨架（sita_kprobe_main.c + Makefile），缺了
+`sita_ddk.c` 本体。完整构建目录需要四件套：
+
+```
+<构建目录>/
+├── Makefile               # 骨架提供（sita_ddk-y := sita_ddk.o sita_kprobe_main.o）
+├── sita_kprobe_main.c     # 骨架提供
+├── sita_ddk_lkm.h         # 骨架提供（模块内部头文件）
+├── sita_ddk.c             # 你的源码（xg→sita 改名后）
+└── kernel_compat.h        # 你的源码
+```
+
+`sita_ddk.c`（原 xingguang_ddk.c 经 sed 改名）还必须做三处适配，否则要么继续报
+undeclared、要么链接失败：
+
+**① 换头文件**（原文件 include 的是打进内核树的补丁头文件）：
+```bash
+sed -i 's|#include <linux/xingguang_ddk.h>|#include "sita_ddk_lkm.h"|' sita_ddk.c
+```
+
+**② 10 个 LSM hook 函数去掉 static**（kretprobe handler 要跨文件调用它们）：
+```bash
+sed -E -i 's/^static int (sita_(bprm_check_security|file_open|file_permission|file_ioctl|mmap_file|file_mprotect|ptrace_access_check|ptrace_traceme|kernel_read_file|kernel_load_data))\(/int \1(/' sita_ddk.c
+```
+（若尚未跑改名 sed，函数名还是 xg_ 前缀，把上面 sita_ 换成 xg_。）
+注意：只去掉这 10 个的 static；`sita_policy_deny`、`sita_sample_opened_script` 等
+内部函数保持 static 即可。
+
+**③ 删除末尾注册段**：`sita_ddk_init()` 整个函数、`DEFINE_LSM`/`security_initcall`
+两个分支、`sita_ddk_add_hooks()` 调用、`sita_hooks[]` 数组上的 `__lsm_ro_after_init`
+（kernel_compat.h 的 SITA_DDK_LKM 分支已清空该宏）；两个 `late_initcall` 改成
+`sita_watchdog_start_lkm()` / `sita_stage_arm_late_lkm()` 普通函数。
+
+**原型核对**（handler 与 callsite 已按补丁核对一致，sita_ddk.c 内定义不要改签名）：
+`sita_ddk_vfs_iter_write(file, iter, pos)` 是 **3 参**；`sita_ddk_blkdev_ioctl(bdev, cmd)`
+**2 参**；`sita_ddk_blkdev_issue_discard/zeroout(bdev, sector, nr_sects)` **3 参**；
+`sita_ddk_dm_target_add(const char *type)` **1 参返回 void**。
+
+**⚠ 原子上下文硬约束**：kretprobe entry_handler 在 int3 上下文执行，原 hook 里
+`sita_sample_opened_script`（file_open 时读脚本采样）等会睡眠的逻辑**必须在
+SITA_DDK_LKM 下裁剪或改 inatomic**，否则加载即 panic（__might_sleep 回溯）。

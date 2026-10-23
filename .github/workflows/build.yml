@@ -89,7 +89,11 @@ jobs:
         env:
           TC: ${{ runner.temp }}/toolchain
         run: |
-          make KDIR="${{ runner.temp }}/kbuild"             PATH="$TC/bin:$PATH"             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf             HOSTCC=clang HOSTCXX=clang++ HOSTAR=llvm-ar
+          make ARCH=arm64 KDIR="${{ runner.temp }}/kbuild" \
+            PATH="$TC/bin:$PATH" \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf \
+            HOSTCC=clang HOSTCXX=clang++ HOSTAR=llvm-ar
 
       - name: 校验产物（vermagic 应等于内核树 kernel.release）
         run: |

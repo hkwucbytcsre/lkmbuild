@@ -915,7 +915,7 @@ static bool sita_gzexe_seen_blocks(unsigned int seen)
 	       (seen & SITA_GZEXE_SEEN_DECOMPRESS) && (seen & SITA_GZEXE_SEEN_TMP);
 }
 
-static const char *sita_shell_script_sample_block_reason(const char *path,
+static __maybe_unused const char *sita_shell_script_sample_block_reason(const char *path,
 						       const u8 *sample,
 						       size_t sample_len)
 {
@@ -2652,7 +2652,7 @@ int sita_bprm_check_security(struct linux_binprm *bprm)
 	return sita_policy_deny(reason, EPERM);
 }
 
-static bool sita_file_should_sample_script(struct file *file, const char *path)
+static __maybe_unused bool sita_file_should_sample_script(struct file *file, const char *path)
 {
 	struct inode *inode;
 

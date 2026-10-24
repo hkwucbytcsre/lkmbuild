@@ -38,6 +38,15 @@
 
 #include "sita_ddk_lkm.h"
 
+/*
+ * 诊断开关：bit0=callsite kprobe 组, bit1=LSM kretprobe 组。
+ * 默认 3（全开）。定位崩溃时可 insmod sita_ddk.ko probe_mask=1 只挂 callsite 组，
+ * 或 probe_mask=2 只挂 LSM 组，看 dmesg 停在哪一步。
+ */
+static unsigned int probe_mask = 3;
+module_param(probe_mask, uint, 0644);
+MODULE_PARM_DESC(probe_mask, "bit0=kprobe group, bit1=kretprobe group");
+
 /* ================= 一、kprobe：callsite 类 ================= */
 
 static int sita_kp_vfs_write(struct kprobe *kp, struct pt_regs *regs)
@@ -244,38 +253,60 @@ static int __init sita_ddk_lkm_init(void)
 {
 	int i, ret;
 
-	for (i = 0; i < ARRAY_SIZE(sita_kps); i++) {
-		ret = register_kprobe(&sita_kps[i]);
-		if (ret) {
-			pr_err("sita_ddk: kprobe %s failed (%d)\n",
-			       sita_kps[i].symbol_name, ret);
-			while (i-- > 0) unregister_kprobe(&sita_kps[i]);
-			return ret;
+	pr_info("sita_ddk: [1/6] init start, probe_mask=%u\n", probe_mask);
+
+	if (probe_mask & 1) {
+		pr_info("sita_ddk: [2/6] registering %zu kprobes...\n",
+			ARRAY_SIZE(sita_kps));
+		for (i = 0; i < ARRAY_SIZE(sita_kps); i++) {
+			pr_info("sita_ddk:   kprobe[%d] %s\n", i, sita_kps[i].symbol_name);
+			ret = register_kprobe(&sita_kps[i]);
+			if (ret) {
+				pr_err("sita_ddk: kprobe %s failed (%d)\n",
+				       sita_kps[i].symbol_name, ret);
+				while (i-- > 0) unregister_kprobe(&sita_kps[i]);
+				return ret;
+			}
 		}
-	}
-	for (i = 0; i < ARRAY_SIZE(sita_krps); i++) {
-		ret = register_kretprobe(&sita_krps[i]);
-		if (ret) {
-			pr_err("sita_ddk: kretprobe %s failed (%d)\n",
-			       sita_krps[i].kp.symbol_name, ret);
-			while (i-- > 0) unregister_kretprobe(&sita_krps[i]);
-			goto err_kp;
-		}
+		pr_info("sita_ddk: [3/6] kprobes armed OK\n");
 	}
 
+	if (probe_mask & 2) {
+		pr_info("sita_ddk: [4/6] registering %zu kretprobes...\n",
+			ARRAY_SIZE(sita_krps));
+		for (i = 0; i < ARRAY_SIZE(sita_krps); i++) {
+			pr_info("sita_ddk:   kretprobe[%d] %s\n", i,
+				sita_krps[i].kp.symbol_name);
+			ret = register_kretprobe(&sita_krps[i]);
+			if (ret) {
+				pr_err("sita_ddk: kretprobe %s failed (%d)\n",
+				       sita_krps[i].kp.symbol_name, ret);
+				while (i-- > 0) unregister_kretprobe(&sita_krps[i]);
+				goto err_kp;
+			}
+		}
+		pr_info("sita_ddk: [5/6] kretprobes armed OK\n");
+	}
+
+	pr_info("sita_ddk: [6/6] watchdog + stage + sysfs...\n");
 	ret = sita_watchdog_start_lkm();
 	if (ret) goto err_krp;
+	pr_info("sita_ddk: watchdog started\n");
 	ret = sita_stage_arm_late_lkm();
 	if (ret) goto err_krp;
+	pr_info("sita_ddk: stage armed, sysfs ready\n");
 
-	pr_info("sita_ddk: %zu kprobes + %zu kretprobes armed\n",
-		ARRAY_SIZE(sita_kps), ARRAY_SIZE(sita_krps));
+	pr_info("sita_ddk: init complete (%u kprobes + %u kretprobes)\n",
+		probe_mask & 1 ? (unsigned)ARRAY_SIZE(sita_kps) : 0,
+		probe_mask & 2 ? (unsigned)ARRAY_SIZE(sita_krps) : 0);
 	return 0;
 
 err_krp:
-	for (i = 0; i < ARRAY_SIZE(sita_krps); i++) unregister_kretprobe(&sita_krps[i]);
+	if (probe_mask & 2)
+		for (i = 0; i < ARRAY_SIZE(sita_krps); i++) unregister_kretprobe(&sita_krps[i]);
 err_kp:
-	for (i = 0; i < ARRAY_SIZE(sita_kps); i++) unregister_kprobe(&sita_kps[i]);
+	if (probe_mask & 1)
+		for (i = 0; i < ARRAY_SIZE(sita_kps); i++) unregister_kprobe(&sita_kps[i]);
 	return ret;
 }
 module_init(sita_ddk_lkm_init);
